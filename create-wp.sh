@@ -1,9 +1,14 @@
 #!/bin/bash
 
-# Configuration
-CT_ID=100
-HOSTNAME="wp-01"
-IP="10.24.36.10"
+# Usage: ./create-wp.sh <CT_ID> <HOSTNAME> <IP> <SSH_USER>
+# Example: ./create-wp.sh 100 wp-01 10.24.36.10 user1
+
+CT_ID=$1
+HOSTNAME=$2
+IP=$3
+SSH_USER=$4
+
+# Shared configuration
 GATEWAY="10.24.36.1"
 TEMPLATE="local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst"
 STORAGE="ceph-pool"
@@ -12,11 +17,15 @@ DISK_SIZE=30
 MEMORY=1024
 CORES=1
 RATE_LIMIT=50
-SSH_USER="user1"
+
+# Validate inputs
+if [ -z "$CT_ID" ] || [ -z "$HOSTNAME" ] || [ -z "$IP" ] || [ -z "$SSH_USER" ]; then
+  echo "Usage: $0 <CT_ID> <HOSTNAME> <IP> <SSH_USER>"
+  exit 1
+fi
 
 echo "=== Creating container $CT_ID ($HOSTNAME) ==="
 
-# Create the container
 pct create $CT_ID $TEMPLATE \
   --hostname $HOSTNAME \
   --storage $STORAGE \
@@ -39,11 +48,9 @@ apt install -y apache2 mariadb-server php php-mysql php-curl php-gd php-mbstring
 
 echo "=== Setting up MariaDB and WordPress ==="
 pct exec $CT_ID -- bash -c "
-# Start MariaDB
 systemctl start mariadb
 systemctl enable mariadb
 
-# Create database
 mysql -u root <<SQLEOF
 CREATE DATABASE wordpress;
 CREATE USER 'wpuser'@'localhost' IDENTIFIED BY 'wppassword';
@@ -51,7 +58,6 @@ GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'localhost';
 FLUSH PRIVILEGES;
 SQLEOF
 
-# Download and install WordPress
 cd /tmp
 wget -q https://wordpress.org/latest.tar.gz
 tar -xzf latest.tar.gz
@@ -59,7 +65,6 @@ cp -r wordpress/* /var/www/html/
 chown -R www-data:www-data /var/www/html/
 rm -f /var/www/html/index.html
 
-# Configure WordPress
 cd /var/www/html
 cp wp-config-sample.php wp-config.php
 sed -i 's/database_name_here/wordpress/' wp-config.php
