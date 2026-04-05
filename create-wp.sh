@@ -96,7 +96,43 @@ policy_out: ACCEPT
 IN ACCEPT -p tcp -dport 22 -log nolog
 IN ACCEPT -p tcp -dport 80 -log nolog
 IN ACCEPT -p tcp -dport 443 -log nolog
+IN ACCEPT -p tcp -dport 9100 -source 10.24.36.20 -log nolog
 FWEOF
+
+echo "=== Installing node_exporter ==="
+pct exec $CT_ID -- bash -c "
+cd /tmp
+wget -q https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz
+tar -xzf node_exporter-1.8.1.linux-amd64.tar.gz
+cp node_exporter-1.8.1.linux-amd64/node_exporter /usr/local/bin/
+useradd --no-create-home --shell /bin/false node_exporter
+cat > /etc/systemd/system/node_exporter.service <<'NEOF'
+[Unit]
+Description=Node Exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/usr/local/bin/node_exporter
+
+[Install]
+WantedBy=multi-user.target
+NEOF
+systemctl daemon-reload
+systemctl enable node_exporter
+systemctl start node_exporter
+"
+
+echo "=== Registering with Prometheus ==="
+pct exec 200 -- bash -c "
+if ! grep -q '${IP}:9100' /etc/prometheus/prometheus.yml; then
+  sed -i \"/job_name: 'wordpress-containers'/,/labels:/{/labels:/i\\        - '${IP}:9100'}\" /etc/prometheus/prometheus.yml
+  systemctl reload prometheus
+fi
+"
 
 echo "=== Done! ==="
 echo "WordPress: http://${IP}"
