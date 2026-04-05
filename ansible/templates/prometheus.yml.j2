@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'wordpress-containers'
+    static_configs:
+      - targets:
+{% for host in groups['wordpress'] %}
+        - '{{ hostvars[host].ansible_host }}:9100'
+{% endfor %}
+        labels:
+          group: 'wordpress'
