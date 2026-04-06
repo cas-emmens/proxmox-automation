@@ -53,6 +53,18 @@ pct list
 qm list
 echo ""
 
+# Ensure monitoring container is running
+echo -e "${YELLOW}=== Ensuring monitoring server is running ===${NC}"
+pct start 200 2>/dev/null || true
+sleep 10
+if curl -s http://10.24.36.20:9090 > /dev/null 2>&1; then
+  echo -e "${GREEN}✓ Monitoring server is running${NC}"
+else
+  echo -e "${RED}✗ Monitoring server failed to start. Aborting.${NC}"
+  exit 1
+fi
+echo ""
+
 # Deploy Klant 1
 echo -e "${YELLOW}========================================${NC}"
 echo -e "${YELLOW}  Deploying Klant 1 (LXC - Ansible)${NC}"
