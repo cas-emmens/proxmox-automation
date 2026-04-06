@@ -98,31 +98,9 @@
 
     - name: Install node_exporter on VMs
       shell: |
-        ssh root@{{ hostvars[item].ansible_host }} bash -c "'
-        cd /tmp
-        wget -q https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz
-        tar -xzf node_exporter-1.8.1.linux-amd64.tar.gz
-        cp node_exporter-1.8.1.linux-amd64/node_exporter /usr/local/bin/
-        useradd --no-create-home --shell /bin/false node_exporter 2>/dev/null
-        cat > /etc/systemd/system/node_exporter.service <<NEOF
-[Unit]
-Description=Node Exporter
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-User=node_exporter
-Group=node_exporter
-Type=simple
-ExecStart=/usr/local/bin/node_exporter
-
-[Install]
-WantedBy=multi-user.target
-NEOF
-        systemctl daemon-reload
-        systemctl enable node_exporter
-        systemctl start node_exporter
-        '"
+        ssh root@{{ hostvars[item].ansible_host }} 'cd /tmp && wget -q https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz && tar -xzf node_exporter-1.8.1.linux-amd64.tar.gz && cp node_exporter-1.8.1.linux-amd64/node_exporter /usr/local/bin/ && useradd --no-create-home --shell /bin/false node_exporter 2>/dev/null; true'
+        scp /root/proxmox-automation/ansible/templates/node_exporter.service root@{{ hostvars[item].ansible_host }}:/etc/systemd/system/node_exporter.service
+        ssh root@{{ hostvars[item].ansible_host }} 'systemctl daemon-reload && systemctl enable node_exporter && systemctl start node_exporter'
       loop: "{{ groups['wordpress_vms'] }}"
 
     - name: Enable HA for VMs
