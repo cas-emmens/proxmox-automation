@@ -67,7 +67,6 @@
         apt install -y apache2 mariadb-server php php-mysql php-curl php-gd php-mbstring php-xml php-xmlrpc php-soap php-intl php-zip wget curl openssh-server
         systemctl start mariadb
         systemctl enable mariadb
-        mysql -u root -e \"CREATE DATABASE wordpress; CREATE USER 'wpuser'@'localhost' IDENTIFIED BY 'wppassword'; GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'localhost'; FLUSH PRIVILEGES;\"
         cd /tmp
         wget -q https://wordpress.org/latest.tar.gz
         tar -xzf latest.tar.gz
@@ -81,6 +80,11 @@
         sed -i \"s/password_here/wppassword/\" wp-config.php
         systemctl restart apache2
         '"
+      loop: "{{ groups['wordpress_vms'] }}"
+
+    - name: Setup WordPress database on VMs
+      shell: |
+        ssh root@{{ hostvars[item].ansible_host }} "mysql -u root -e \"CREATE DATABASE IF NOT EXISTS wordpress; DROP USER IF EXISTS 'wpuser'@'localhost'; CREATE USER 'wpuser'@'localhost' IDENTIFIED BY 'wppassword'; GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'localhost'; FLUSH PRIVILEGES;\""
       loop: "{{ groups['wordpress_vms'] }}"
 
     - name: Create SSH users on VMs
