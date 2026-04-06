@@ -1,0 +1,176 @@
+---
+- name: Create WordPress VMs (Klant 2 - HA)
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Create VMs from golden image
+      shell: |
+        qm create {{ hostvars[item].vm_id }} --name {{ item }} --memory 1024 --cores 1 \
+          --net0 virtio,bridge=vmbr0 \
+          --scsihw virtio-scsi-pci --ostype l26 --serial0 socket
+        qm disk import {{ hostvars[item].vm_id }} /var/lib/vz/template/golden/wp-golden.raw ceph-pool
+        qm set {{ hostvars[item].vm_id }} --scsi0 ceph-pool:vm-{{ hostvars[item].vm_id }}-disk-0
+        qm set {{ hostvars[item].vm_id }} --boot order=scsi0
+      loop: "{{ groups['wordpress_vms'] }}"
+      ignore_errors: yes
+
+    - name: Configure VM disks with network
+      shell: |
+        rbd map ceph-pool/vm-{{ hostvars[item].vm_id }}-disk-0
+        DEV=$(rbd showmapped | grep vm-{{ hostvars[item].vm_id }}-disk-0 | awk '{print $NF}')
+        mount ${DEV}p1 /mnt/vm-disk
+        echo "{{ item }}" > /mnt/vm-disk/etc/hostname
+        cat > /mnt/vm-disk/etc/network/interfaces <<NETEOF
+        auto lo
+        iface lo inet loopback
+
+        auto ens18
+        iface ens18 inet static
+          address {{ hostvars[item].ansible_host }}/24
+          gateway 10.24.36.1
+          dns-nameservers 1.1.1.1
+        NETEOF
+        systemd-machine-id-setup --root=/mnt/vm-disk
+        umount /mnt/vm-disk
+        rbd unmap $DEV
+      loop: "{{ groups['wordpress_vms'] }}"
+
+    - name: Start VMs
+      command: "qm start {{ hostvars[item].vm_id }}"
+      loop: "{{ groups['wordpress_vms'] }}"
+      ignore_errors: yes
+
+    - name: Wait for VMs to boot
+      pause:
+        seconds: 20
+
+    - name: Configure firewall for VMs
+      shell: |
+        cat > /etc/pve/firewall/{{ hostvars[item].vm_id }}.fw <<'FWEOF'
+        [OPTIONS]
+        enable: 1
+        policy_in: DROP
+        policy_out: ACCEPT
+
+        [RULES]
+        IN ACCEPT -p tcp -dport 22 -log nolog
+        IN ACCEPT -p tcp -dport 80 -log nolog
+        IN ACCEPT -p tcp -dport 443 -log nolog
+        IN ACCEPT -p tcp -dport 9100 -source 10.24.36.20 -log nolog
+        FWEOF
+      loop: "{{ groups['wordpress_vms'] }}"
+
+    - name: Install WordPress on VMs
+      shell: |
+        ssh -o StrictHostKeyChecking=no root@{{ hostvars[item].ansible_host }} bash -c "'
+        apt update && apt upgrade -y
+        apt install -y apache2 mariadb-server php php-mysql php-curl php-gd php-mbstring php-xml php-xmlrpc php-soap php-intl php-zip wget curl openssh-server
+        systemctl start mariadb
+        systemctl enable mariadb
+        mysql -u root -e \"CREATE DATABASE wordpress; CREATE USER 'wpuser'@'localhost' IDENTIFIED BY 'wppassword'; GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'localhost'; FLUSH PRIVILEGES;\"
+        cd /tmp
+        wget -q https://wordpress.org/latest.tar.gz
+        tar -xzf latest.tar.gz
+        cp -r wordpress/* /var/www/html/
+        chown -R www-data:www-data /var/www/html/
+        rm -f /var/www/html/index.html
+        cd /var/www/html
+        cp wp-config-sample.php wp-config.php
+        sed -i \"s/database_name_here/wordpress/\" wp-config.php
+        sed -i \"s/username_here/wpuser/\" wp-config.php
+        sed -i \"s/password_here/wppassword/\" wp-config.php
+        systemctl restart apache2
+        '"
+      loop: "{{ groups['wordpress_vms'] }}"
+
+    - name: Create SSH users on VMs
+      shell: |
+        ssh root@{{ hostvars[item].ansible_host }} bash -c "'
+        useradd -m -s /bin/bash {{ hostvars[item].ssh_user }}
+        mkdir -p /home/{{ hostvars[item].ssh_user }}/.ssh
+        ssh-keygen -t ed25519 -f /home/{{ hostvars[item].ssh_user }}/.ssh/id_ed25519 -N \"\"
+        cp /home/{{ hostvars[item].ssh_user }}/.ssh/id_ed25519.pub /home/{{ hostvars[item].ssh_user }}/.ssh/authorized_keys
+        chown -R {{ hostvars[item].ssh_user }}:{{ hostvars[item].ssh_user }} /home/{{ hostvars[item].ssh_user }}/.ssh
+        chmod 700 /home/{{ hostvars[item].ssh_user }}/.ssh
+        chmod 600 /home/{{ hostvars[item].ssh_user }}/.ssh/authorized_keys
+        '"
+      loop: "{{ groups['wordpress_vms'] }}"
+
+    - name: Install node_exporter on VMs
+      shell: |
+        ssh root@{{ hostvars[item].ansible_host }} bash -c "'
+        cd /tmp
+        wget -q https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz
+        tar -xzf node_exporter-1.8.1.linux-amd64.tar.gz
+        cp node_exporter-1.8.1.linux-amd64/node_exporter /usr/local/bin/
+        useradd --no-create-home --shell /bin/false node_exporter 2>/dev/null
+        cat > /etc/systemd/system/node_exporter.service <<NEOF
+[Unit]
+Description=Node Exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/usr/local/bin/node_exporter
+
+[Install]
+WantedBy=multi-user.target
+NEOF
+        systemctl daemon-reload
+        systemctl enable node_exporter
+        systemctl start node_exporter
+        '"
+      loop: "{{ groups['wordpress_vms'] }}"
+
+    - name: Enable HA for VMs
+      command: "ha-manager add vm:{{ hostvars[item].vm_id }} --state started --max_restart 3 --max_relocate 3"
+      loop: "{{ groups['wordpress_vms'] }}"
+      ignore_errors: yes
+
+- name: Update Prometheus monitoring
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Deploy Prometheus config
+      shell: |
+        pct exec 200 -- bash -c "cat > /etc/prometheus/prometheus.yml <<'PEOF'
+        global:
+          scrape_interval: 15s
+
+        scrape_configs:
+          - job_name: prometheus
+            static_configs:
+              - targets: ['localhost:9090']
+
+          - job_name: proxmox-nodes
+            static_configs:
+              - targets:
+                - '10.24.36.2:9100'
+                - '10.24.36.3:9100'
+                - '10.24.36.4:9100'
+                labels:
+                  group: proxmox
+
+          - job_name: wordpress-containers
+            static_configs:
+              - targets:
+        {% for host in groups['wordpress'] %}
+                - '{{ hostvars[host].ansible_host }}:9100'
+        {% endfor %}
+                labels:
+                  group: wordpress-lxc
+
+          - job_name: wordpress-vms
+            static_configs:
+              - targets:
+        {% for host in groups['wordpress_vms'] %}
+                - '{{ hostvars[host].ansible_host }}:9100'
+        {% endfor %}
+                labels:
+                  group: wordpress-vm
+        PEOF
+        systemctl restart prometheus
+        "
