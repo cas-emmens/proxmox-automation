@@ -38,10 +38,12 @@ echo ""
 echo -e "${YELLOW}=== Cleaning up Klant 2 VMs ===${NC}"
 for id in 110 111 112; do
   ha-manager remove vm:$id 2>/dev/null || true
-  sleep 2
-  qm stop $id --skiplock 2>/dev/null || true
-  sleep 2
-  qm destroy $id --skiplock 2>/dev/null || true
+done
+sleep 5
+for id in 110 111 112; do
+  for NODE_IP in 10.24.36.2 10.24.36.3 10.24.36.4; do
+    ssh -o ConnectTimeout=3 root@$NODE_IP "qm stop $id --skiplock 2>/dev/null; qm destroy $id --skiplock 2>/dev/null" 2>/dev/null || true
+  done
 done
 echo -e "${GREEN}✓ Klant 2 VMs removed${NC}"
 echo ""
